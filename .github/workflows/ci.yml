@@ -1,0 +1,318 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  # ilammy/msvc-dev-cmd and KyleMayes/install-llvm-action still run on node20;
+  # this forces them onto node24 until they migrate.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: read
+
+    outputs:
+      src:    ${{ steps.filter.outputs.src }}
+      tests:  ${{ steps.filter.outputs.tests }}
+      format: ${{ steps.filter.outputs.format }}
+      tidy:   ${{ steps.filter.outputs.tidy }}
+      cmake:  ${{ steps.filter.outputs.cmake }}
+      ci:     ${{ steps.filter.outputs.ci }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'src/**'
+            tests:
+              - 'test/**'
+            format:
+              - '.clang-format'
+            tidy:
+              - '.clang-tidy'
+            cmake:
+              - 'CMakeLists.txt'
+              - 'CMakePresets.json'
+              - 'cmake/**'
+              - 'vcpkg.json'
+            ci:
+              - '.github/workflows/ci.yml'
+
+  clang-format:
+    needs: [changes]
+    runs-on: ubuntu-latest
+
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.src == 'true' ||
+      needs.changes.outputs.tests == 'true' ||
+      needs.changes.outputs.format == 'true' ||
+      needs.changes.outputs.ci == 'true'
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jidicula/clang-format-action@654a770daa28443dd111d133e4083e21c1075674 # v4.18.0
+        with:
+          clang-format-version: '22'
+          check-path: src
+
+      - uses: jidicula/clang-format-action@654a770daa28443dd111d133e4083e21c1075674 # v4.18.0
+        with:
+          clang-format-version: '22'
+          check-path: test
+
+  test-windows:
+    needs: [changes, clang-format]
+    runs-on: windows-latest
+
+    if: >-
+      always() &&
+      (needs.clang-format.result == 'success' || needs.clang-format.result == 'skipped') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.src == 'true' ||
+        needs.changes.outputs.tests == 'true' ||
+        needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      )
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Setup vcpkg
+        uses: ./.github/actions/setup-vcpkg
+        with:
+          cache-prefix: vcpkg-tests
+
+      - name: Configure and Build Tests
+        uses: lukka/run-cmake@5d55ea7949e25f69f0ecb516d8d572297e03a956 # v10.9
+        with:
+          configurePreset: test-windows
+          buildPreset: test-windows
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,C:\\vcpkg-cache,readwrite"
+
+      - name: Run Tests
+        run: ctest --preset test-windows
+
+  test-linux:
+    needs: [changes, clang-format]
+    runs-on: ubuntu-latest
+
+    if: >-
+      always() &&
+      (needs.clang-format.result == 'success' || needs.clang-format.result == 'skipped') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.src == 'true' ||
+        needs.changes.outputs.tests == 'true' ||
+        needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      )
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Catch2 and Ninja
+        run: sudo apt-get update && sudo apt-get install -y catch2 ninja-build
+
+      - name: Configure and Build Tests
+        run: |
+          cmake --preset test-linux
+          cmake --build --preset test-linux
+
+      - name: Run Tests
+        run: ctest --preset test-linux
+
+  build-windows:
+    needs: [changes, clang-format]
+    runs-on: windows-latest
+
+    if: >-
+      always() &&
+      (needs.clang-format.result == 'success' || needs.clang-format.result == 'skipped') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.src == 'true' ||
+        needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      )
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Setup vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure and Build
+        uses: lukka/run-cmake@5d55ea7949e25f69f0ecb516d8d572297e03a956 # v10.9
+        with:
+          configurePreset: release-windows
+          buildPreset: release-windows
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,C:\\vcpkg-cache,readwrite"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.event.repository.name }}
+          path: |
+            build/msvc/*.dll
+            build/msvc/*.pdb
+
+  build-linux:
+    needs: [changes, clang-format]
+    runs-on: ubuntu-latest
+
+    if: >-
+      always() &&
+      (needs.clang-format.result == 'success' || needs.clang-format.result == 'skipped') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.src == 'true' ||
+        needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      )
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          # The Windows STL requires Clang 19 or newer; Ubuntu's default Clang is too old.
+          version: "21"
+          directory: ${{ runner.temp }}/llvm
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Restore xwin binary cache
+        id: xwin-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/xwin
+          key: xwin-0.9.0
+
+      - name: Install xwin
+        if: steps.xwin-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 0.9.0 xwin
+
+      - name: Restore Windows SDK and CRT cache
+        id: xwin-splat-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.xwin
+          key: xwin-splat-0.9.0
+
+      - name: Fetch the Windows SDK and CRT
+        if: steps.xwin-splat-cache.outputs.cache-hit != 'true'
+        run: xwin --accept-license --temp splat --output "$HOME/.xwin"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-linux-${{ hashFiles('vcpkg.json', 'cmake/triplets/**', 'cmake/ports/**') }}
+          restore-keys: vcpkg-linux-
+
+      - name: Configure and Build
+        run: |
+          cmake --preset release-linux
+          cmake --build --preset release-linux
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
+
+  clang-tidy:
+    needs: [changes, clang-format]
+    runs-on: windows-latest
+
+    if: >-
+      always() &&
+      (needs.clang-format.result == 'success' || needs.clang-format.result == 'skipped') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.src == 'true' ||
+        needs.changes.outputs.tidy == 'true' ||
+        needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.ci == 'true'
+      )
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          # VS 2026 STL on the windows-latest image requires Clang 20 or newer (STL1000).
+          version: "21"
+
+      - name: Setup vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure
+        uses: lukka/run-cmake@5d55ea7949e25f69f0ecb516d8d572297e03a956 # v10.9
+        with:
+          configurePreset: tidy-windows
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,C:\\vcpkg-cache,readwrite"
+
+      - name: Run clang-tidy
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path src -Include *.cpp -Recurse |
+            Select-Object -ExpandProperty FullName
+          clang-tidy.exe -p build/tidy $files

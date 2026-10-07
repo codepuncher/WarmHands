@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+env:
+  # ilammy/msvc-dev-cmd still runs on node20; this forces it onto node24 until it migrates.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        env:
+          GH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          $v = $env:GH_REF_NAME -replace '^v', ''
+          echo "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Setup vcpkg
+        uses: ./.github/actions/setup-vcpkg
+
+      - name: Configure and Build
+        uses: lukka/run-cmake@5d55ea7949e25f69f0ecb516d8d572297e03a956 # v10.9
+        with:
+          configurePreset: release-windows
+          buildPreset: release-windows
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,C:\\vcpkg-cache,readwrite"
+
+      - name: Package
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: bash scripts/package.sh --build-dir build/msvc "$VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: |
+            ${{ steps.package.outputs.zip }}
+            build/msvc/*.pdb
+          generate_release_notes: true
