@@ -1,0 +1,13 @@
+name: Cache Spriggit
+description: Restore the Spriggit CLI and the translation package it installs under the temp directory.
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Spriggit cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          build/tools
+          ${{ runner.temp }}/Spriggit/Translations
+        key: spriggit-${{ runner.os }}-${{ hashFiles('cmake/Spriggit.cmake', 'plugin/WarmHands/spriggit-meta.json') }}

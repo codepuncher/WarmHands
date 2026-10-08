@@ -35,6 +35,12 @@ jobs:
           $v = $env:GH_REF_NAME -replace '^v', ''
           echo "value=$v" >> $env:GITHUB_OUTPUT
 
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          # Spriggit installs its translation package with `dotnet tool install`.
+          dotnet-version: '10.0.x'
+
       - name: Setup vcpkg
         uses: ./.github/actions/setup-vcpkg
 

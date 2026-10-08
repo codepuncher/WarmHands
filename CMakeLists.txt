@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(PLUGIN_TESTS_ONLY "Build unit tests instead of the plugin" OFF)
+option(PLUGIN_BUILD_ESL "Build WarmHands.esl with Spriggit" ON)
 
 if(PLUGIN_TESTS_ONLY)
 
@@ -19,7 +20,14 @@ if(PLUGIN_TESTS_ONLY)
     include(CTest)
     include(Catch)
 
-    add_executable(${PROJECT_NAME}Tests test/ExampleTests.cpp)
+    add_executable(
+        ${PROJECT_NAME}Tests
+        test/SettingsTests.cpp
+        test/WarmthTests.cpp
+        test/IdleDecisionTests.cpp
+        test/KeyNamesTests.cpp
+        test/HoldTrackerTests.cpp
+        test/HeatGeometryTests.cpp)
 
     target_include_directories(${PROJECT_NAME}Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
@@ -29,21 +37,20 @@ if(PLUGIN_TESTS_ONLY)
 
 else()
 
-    # Fail fast with an actionable message if the submodule wasn't checked out.
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/commonlibsse-ng/CMakeLists.txt")
         message(FATAL_ERROR "lib/commonlibsse-ng is not checked out. Clone with --recurse-submodules, "
                             "or run: git submodule update --init --recursive")
     endif()
-
-    # Dependencies
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/skse-mcp/include/SKSEMCP/SKSEMenuFramework.hpp")
+        message(FATAL_ERROR "lib/skse-mcp is not checked out. Clone with --recurse-submodules, "
+                            "or run: git submodule update --init --recursive")
+    endif()
 
     find_package(spdlog CONFIG REQUIRED)
     # directxtk must be found before add_commonlibsse_plugin (CommonLibSSE-NG links
     # Microsoft::DirectXTK transitively).
     find_package(directxtk CONFIG REQUIRED)
     # rapidcsv must be in vcpkg.json (CommonLibSSE-NG unconditionally adds it as an include dir)
-
-    # CommonLibSSE-NG
 
     set(ENABLE_SKYRIM_SE
         ON
@@ -75,7 +82,7 @@ else()
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/src")
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/src/version.rc" @ONLY)
 
-    # Plugin — auto-generates SKSEPlugin_Version; Plugin.cpp only needs SKSEPlugin_Load
+    # add_commonlibsse_plugin generates SKSEPlugin_Version, so Plugin.cpp only defines SKSEPlugin_Load.
     add_commonlibsse_plugin(
         ${PROJECT_NAME}
         NAME
@@ -84,6 +91,27 @@ else()
         "codepuncher"
         SOURCES
         src/Plugin.cpp
+        src/Config.h
+        src/Config.cpp
+        src/FireMagic.h
+        src/FireMagic.cpp
+        src/HeatSource.h
+        src/HeatSource.cpp
+        src/HoldInput.h
+        src/HoldInput.cpp
+        src/HoldTracker.h
+        src/IdleDecision.h
+        src/KeyNames.h
+        src/MenuUI.h
+        src/MenuUI.cpp
+        src/PlayerState.h
+        src/PlayerState.cpp
+        src/RangeOverlay.h
+        src/RangeOverlay.cpp
+        src/Settings.h
+        src/Ticker.h
+        src/Ticker.cpp
+        src/WarmthSource.h
         "${CMAKE_CURRENT_BINARY_DIR}/src/version.rc"
         USE_ADDRESS_LIBRARY)
 
@@ -102,6 +130,10 @@ else()
 
     target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
                                                        "${CMAKE_CURRENT_BINARY_DIR}/src")
+    target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib/skse-mcp/include")
+    # windows.h (via SimpleIni) otherwise defines max(), which breaks numeric_limits<>::max(), and
+    # winspool's AddForm macro, which renames BGSListForm::AddForm.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 
     set_target_properties(
         ${PROJECT_NAME}
@@ -109,14 +141,13 @@ else()
                    PREFIX ""
                    SUFFIX ".dll")
 
-    # Compiler/linker flags: /Zi emits PDB in all configs; Release gets full optimization + /DEBUG:FULL
     if(MSVC)
         target_compile_options(${PROJECT_NAME} PRIVATE /Zi "$<$<CONFIG:Release>:/Zc:inline;/JMC->")
         target_link_options(${PROJECT_NAME} PRIVATE "$<$<CONFIG:Debug>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
                             "$<$<CONFIG:Release>:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF;/DEBUG:FULL>")
     endif()
 
-    # LTO/IPO — guarded: unconditionally setting IPO causes a fatal error on toolchains that don't support it
+    # Setting IPO on a toolchain that doesn't support it is a fatal error.
     include(CheckIPOSupported)
     check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_output)
     if(_ipo_supported)
@@ -124,8 +155,6 @@ else()
     else()
         message(VERBOSE "IPO not supported: ${_ipo_output}")
     endif()
-
-    # Deploy: copies DLL + PDB to SKYRIM_MODS_FOLDER, SKYRIM_FOLDER/Data, or build/deploy/ as fallback
 
     if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
         set(_default_deploy "$ENV{SKYRIM_MODS_FOLDER}/${PROJECT_NAME}")
@@ -142,17 +171,14 @@ else()
             "Override deploy destination (leave empty to derive from SKYRIM_MODS_FOLDER or SKYRIM_FOLDER in the environment, optionally sourced from .env)"
     )
 
-    # DEPLOY_DIR was previously written to the cache by the project and is no longer supported.
-    # Clear it so stale cached values don't shadow the env-derived path. Users who want a
-    # fixed deploy path should use -DDEPLOY_DIR_OVERRIDE=... instead.
+    # A cached DEPLOY_DIR would shadow the env-derived path.
     if(DEFINED CACHE{DEPLOY_DIR})
         message(WARNING "DEPLOY_DIR is no longer a cache variable and has been removed. "
                         "To pin a fixed deploy path, set -DDEPLOY_DIR_OVERRIDE=... instead.")
         unset(DEPLOY_DIR CACHE)
     endif()
 
-    # Always recompute so environment changes take effect on every configure.
-    # DEPLOY_DIR_OVERRIDE (if set) wins over the env-derived default.
+    # Recomputed on every configure so environment changes take effect.
     unset(DEPLOY_DIR CACHE)
     if(NOT DEPLOY_DIR_OVERRIDE STREQUAL "")
         set(DEPLOY_DIR "${DEPLOY_DIR_OVERRIDE}")
@@ -167,11 +193,32 @@ else()
         DESTINATION "${DEPLOY_DIR}/SKSE/Plugins"
         OPTIONAL)
 
+    install(FILES "WarmHands.ini" DESTINATION "${DEPLOY_DIR}/SKSE/Plugins")
+
+    set(_deploy_deps ${PROJECT_NAME})
+    if(PLUGIN_BUILD_ESL)
+        # WarmHands.esl is generated from its Spriggit YAML in plugin/WarmHands (needs the .NET SDK).
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Spriggit.cmake")
+
+        file(GLOB_RECURSE _plugin_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/plugin/WarmHands/*")
+        set(_esl "${CMAKE_BINARY_DIR}/WarmHands.esl")
+        add_custom_command(
+            OUTPUT "${_esl}"
+            COMMAND "${SPRIGGIT_EXECUTABLE}" deserialize --InputPath "${CMAKE_CURRENT_SOURCE_DIR}/plugin/WarmHands"
+                    --OutputPath "${_esl}"
+            DEPENDS ${_plugin_sources} "${SPRIGGIT_EXECUTABLE}"
+            COMMENT "Building WarmHands.esl from plugin/WarmHands"
+            VERBATIM)
+        add_custom_target(WarmHandsPlugin ALL DEPENDS "${_esl}")
+        install(FILES "${_esl}" DESTINATION "${DEPLOY_DIR}")
+        list(APPEND _deploy_deps WarmHandsPlugin)
+    endif()
+
     # `cmake --build --preset deploy`  (or  cmake --workflow --preset deploy)
     add_custom_target(
         deploy
         COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}"
-        DEPENDS ${PROJECT_NAME}
-        COMMENT "Deploying to ${DEPLOY_DIR}/SKSE/Plugins")
+        DEPENDS ${_deploy_deps}
+        COMMENT "Deploying to ${DEPLOY_DIR}")
 
-endif() # PLUGIN_TESTS_ONLY
+endif()

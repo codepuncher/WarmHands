@@ -71,7 +71,8 @@
             "binaryDir": "${sourceDir}/build/tidy",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_DISABLE_PRECOMPILE_HEADERS": "ON"
+                "CMAKE_DISABLE_PRECOMPILE_HEADERS": "ON",
+                "PLUGIN_BUILD_ESL": "OFF"
             }
         },
         {

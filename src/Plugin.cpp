@@ -1,5 +1,11 @@
 #include "PCH.h"
 
+#include "Config.h"
+#include "HeatSource.h"
+#include "HoldInput.h"
+#include "MenuUI.h"  // NOLINT(readability-duplicate-include): clang-tidy 21 false positive on Linux clang-cl
+#include "Ticker.h"
+
 void SetupLog()
 {
 	auto logsFolder = logger::log_directory();
@@ -28,16 +34,28 @@ void SetupLog()
 	spdlog::flush_on(spdlog::level::info);
 }
 
+void OnInputLoaded()
+{
+	auto* inputDeviceManager = RE::BSInputDeviceManager::GetSingleton();
+	if (!inputDeviceManager) {
+		logger::error("BSInputDeviceManager unavailable; hold to warm hands disabled");
+		return;
+	}
+	inputDeviceManager->PrependEventSink(WarmHands::HoldInput::GetSingleton());
+}
+
 void OnDataLoaded()
 {
-	logger::info("OnDataLoaded hook fired");
-
-	const auto* plugin = SKSE::PluginDeclaration::GetSingleton();
-	const auto  name = plugin ? plugin->GetName() : "Plugin";
-
-	if (auto* const console = RE::ConsoleLog::GetSingleton()) {
-		console->Print("[%s] Loaded successfully!", std::string(name).c_str());
+	WarmHands::MenuUI::Register();
+	if (WarmHands::HeatSource::Initialize()) {
+		WarmHands::Ticker::Start();
 	}
+}
+
+void OnGameLoaded()
+{
+	WarmHands::Ticker::Reset();
+	WarmHands::HoldInput::GetSingleton()->Configure(WarmHands::Config::Active());
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
@@ -52,6 +70,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	}
 	logger::info("{} v{} loaded", plugin->GetName(), plugin->GetVersion());
 
+	const auto settings = WarmHands::Config::LoadSettings();
+	WarmHands::Config::SetCurrent(settings);
+	WarmHands::Config::ApplyLogLevel(settings);
+
 	const auto* messaging = SKSE::GetMessagingInterface();
 	if (!messaging) {
 		logger::error("Failed to get SKSE messaging interface");
@@ -60,8 +82,15 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 
 	if (!messaging->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 			switch (a_msg->type) {
+			case SKSE::MessagingInterface::kInputLoaded:
+				OnInputLoaded();
+				break;
 			case SKSE::MessagingInterface::kDataLoaded:
 				OnDataLoaded();
+				break;
+			case SKSE::MessagingInterface::kPostLoadGame:
+			case SKSE::MessagingInterface::kNewGame:
+				OnGameLoaded();
 				break;
 			default:
 				break;

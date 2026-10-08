@@ -30,6 +30,7 @@ jobs:
       format: ${{ steps.filter.outputs.format }}
       tidy:   ${{ steps.filter.outputs.tidy }}
       cmake:  ${{ steps.filter.outputs.cmake }}
+      plugin: ${{ steps.filter.outputs.plugin }}
       ci:     ${{ steps.filter.outputs.ci }}
 
     steps:
@@ -52,8 +53,12 @@ jobs:
               - 'CMakePresets.json'
               - 'cmake/**'
               - 'vcpkg.json'
+              - 'scripts/build.sh'
+            plugin:
+              - 'plugin/**'
             ci:
               - '.github/workflows/ci.yml'
+              - '.github/actions/**'
 
   clang-format:
     needs: [changes]
@@ -168,6 +173,7 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         needs.changes.outputs.src == 'true' ||
         needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.plugin == 'true' ||
         needs.changes.outputs.ci == 'true'
       )
 
@@ -182,6 +188,15 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          # Spriggit installs its translation package with `dotnet tool install`.
+          dotnet-version: '10.0.x'
+
+      - name: Restore Spriggit cache
+        uses: ./.github/actions/cache-spriggit
+
       - name: Setup vcpkg
         uses: ./.github/actions/setup-vcpkg
 
@@ -191,6 +206,9 @@ jobs:
           configurePreset: release-windows
           buildPreset: release-windows
         env:
+          # Spriggit installs its translation package under the temp directory.
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
           VCPKG_BINARY_SOURCES: "clear;files,C:\\vcpkg-cache,readwrite"
 
       - name: Upload artifact
@@ -200,6 +218,7 @@ jobs:
           path: |
             build/msvc/*.dll
             build/msvc/*.pdb
+            build/msvc/*.esl
 
   build-linux:
     needs: [changes, clang-format]
@@ -212,6 +231,7 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         needs.changes.outputs.src == 'true' ||
         needs.changes.outputs.cmake == 'true' ||
+        needs.changes.outputs.plugin == 'true' ||
         needs.changes.outputs.ci == 'true'
       )
 
@@ -233,6 +253,15 @@ jobs:
 
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          # Spriggit installs its translation package with `dotnet tool install`.
+          dotnet-version: '10.0.x'
+
+      - name: Restore Spriggit cache
+        uses: ./.github/actions/cache-spriggit
 
       - name: Restore xwin binary cache
         id: xwin-cache
@@ -264,10 +293,10 @@ jobs:
           restore-keys: vcpkg-linux-
 
       - name: Configure and Build
-        run: |
-          cmake --preset release-linux
-          cmake --build --preset release-linux
+        run: ./scripts/build.sh
         env:
+          # Spriggit installs its translation package under the temp directory.
+          TMPDIR: ${{ runner.temp }}
           VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-cache,readwrite"
 
   clang-tidy:
@@ -315,4 +344,4 @@ jobs:
         run: |
           $files = Get-ChildItem -Path src -Include *.cpp -Recurse |
             Select-Object -ExpandProperty FullName
-          clang-tidy.exe -p build/tidy $files
+          clang-tidy.exe -p build/tidy --warnings-as-errors='*' $files
