@@ -23,6 +23,13 @@ namespace
 		},
 	};
 
+	// Campfire's heat list includes these Skyrim.esm activators, which give off no heat.
+	constexpr auto kNotHeat = std::to_array<RE::FormID>({
+		0x001096D6,  // WinterholdLightSpellStatic
+		0x000430A4,  // MQ206TimeWound
+		0x0005B7F5,  // FXAncientTimeWound
+	});
+
 	constexpr float kLeftoverSearchRadius = 4096.0F;
 	constexpr float kFollowDistance = 50.0F;
 
@@ -395,7 +402,7 @@ namespace
 	const RE::TESBoundObject* ListedHeatSourceBase(const State& state, const RE::TESObjectREFR& ref)
 	{
 		const auto* base = ref.GetBaseObject();
-		if (!base || base == state.activator) {
+		if (!base || base == state.activator || std::ranges::contains(kNotHeat, base->GetFormID())) {
 			return nullptr;
 		}
 		const bool listed = std::ranges::any_of(state.nearHeatLists, [base](const RE::BGSListForm* list) { return list->HasForm(base); });
