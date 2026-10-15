@@ -52,7 +52,7 @@ namespace WarmHands
 		if (canPlay) {
 			return IdleAction::kNone;
 		}
-		const bool playerBrokeIdle = in.stillSeconds <= 0.0F || in.handsDrawn || in.sneaking || in.busy;
+		const bool playerBrokeIdle = in.stillSeconds <= 0.0F || in.handsDrawn || in.busy;
 		return playerBrokeIdle ? IdleAction::kForget : IdleAction::kStop;
 	}
 }

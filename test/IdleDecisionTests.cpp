@@ -103,10 +103,6 @@ TEST_CASE("DecideIdle forgets the idle when the player already broke it", "[idle
 	auto drawn = ReadyToWarm();
 	drawn.handsDrawn = true;
 	CHECK(DecideIdle(drawn, true, true) == IdleAction::kForget);
-
-	auto sneaking = ReadyToWarm();
-	sneaking.sneaking = true;
-	CHECK(DecideIdle(sneaking, true, true) == IdleAction::kForget);
 }
 
 TEST_CASE("DecideIdle does not auto start when auto is off", "[idle]")
