@@ -1,6 +1,7 @@
 #include "PCH.h"
 
 #include "Config.h"
+#include "GameEvents.h"
 #include "HeatSource.h"
 #include "HoldInput.h"
 #include "MenuUI.h"  // NOLINT(readability-duplicate-include): clang-tidy 21 false positive on Linux clang-cl
@@ -48,6 +49,7 @@ void OnDataLoaded()
 {
 	WarmHands::MenuUI::Register();
 	if (WarmHands::HeatSource::Initialize()) {
+		WarmHands::GameEvents::GetSingleton()->Register();
 		WarmHands::Ticker::Start();
 	}
 }

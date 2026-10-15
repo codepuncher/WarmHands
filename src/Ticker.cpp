@@ -1,6 +1,7 @@
 #include "PCH.h"
 
 #include "Config.h"
+#include "GameEvents.h"
 #include "HeatSource.h"
 #include "IdleDecision.h"
 #include "PlayerState.h"
@@ -9,20 +10,121 @@
 
 namespace
 {
-	constexpr auto       kTickPeriod = 1s;
-	constexpr float      kTickSeconds = std::chrono::duration<float>(kTickPeriod).count();
+	using Clock = std::chrono::steady_clock;
+
+	constexpr auto       kOverlayPeriod = 1s;
+	constexpr auto       kTransitionPeriod = 250ms;
+	constexpr auto       kMovingPeriod = 1s;
+	constexpr auto       kRetryPeriod = 1s;
+	constexpr auto       kLookSettle = 500ms;
 	constexpr RE::FormID kIdleWarmHandsStanding = 0x0E8642;
+
+	void Evaluate();
+
+	class Scheduler
+	{
+	public:
+		void Request(Clock::duration delay)
+		{
+			bool sooner = false;
+			{
+				const std::scoped_lock lock{ mutex_ };
+				const auto             at = Clock::now() + delay;
+				sooner = !checkAt_ || at < *checkAt_;
+				checkAt_ = sooner ? at : checkAt_;
+			}
+			if (sooner) {
+				wake_.notify_one();
+			}
+		}
+
+		void SetStillAt(std::optional<Clock::time_point> at)
+		{
+			bool sooner = false;
+			{
+				const std::scoped_lock lock{ mutex_ };
+				sooner = at && (!stillAt_ || *at < *stillAt_);
+				stillAt_ = at;
+			}
+			if (sooner) {
+				wake_.notify_one();
+			}
+		}
+
+		void Run(const std::stop_token& stop, const SKSE::TaskInterface& tasks)
+		{
+			std::unique_lock lock{ mutex_ };
+			while (!stop.stop_requested()) {
+				const auto next = Earliest();
+				if (!next) {
+					wake_.wait(lock, stop, [this] { return Earliest().has_value(); });
+					continue;
+				}
+				if (Clock::now() < *next) {
+					wake_.wait_until(lock, stop, *next, [this, next] { return Earliest() != next; });
+					continue;
+				}
+				const auto now = Clock::now();
+				if (checkAt_ && *checkAt_ <= now) {
+					checkAt_.reset();
+				}
+				if (stillAt_ && *stillAt_ <= now) {
+					stillAt_.reset();
+				}
+				if (queued_) {
+					continue;
+				}
+				queued_ = true;
+				lock.unlock();
+				tasks.AddTask(Evaluate);
+				lock.lock();
+			}
+		}
+
+		void Started()
+		{
+			const std::scoped_lock lock{ mutex_ };
+			queued_ = false;
+		}
+
+	private:
+		[[nodiscard]] std::optional<Clock::time_point> Earliest() const
+		{
+			if (checkAt_ && stillAt_) {
+				return std::min(*checkAt_, *stillAt_);
+			}
+			return checkAt_ ? checkAt_ : stillAt_;
+		}
+
+		std::mutex                       mutex_;
+		std::condition_variable_any      wake_;
+		std::optional<Clock::time_point> checkAt_;
+		std::optional<Clock::time_point> stillAt_;
+		bool                             queued_{ false };
+	};
+
+	Scheduler& GetScheduler()
+	{
+		static Scheduler scheduler;
+		return scheduler;
+	}
 
 	struct State
 	{
-		float                    stillSeconds{ 0.0F };
+		Clock::time_point        stillSince{ Clock::now() };
+		Clock::duration          idleDelay{ std::chrono::seconds{ WarmHands::kDefaultIdleDelay } };
+		Clock::time_point        lookSettledAt;
+		Clock::time_point        idleStartedAt;
+		const RE::TESIdleForm*   idleBaseline{ nullptr };
+		const RE::TESObjectCELL* cell{ nullptr };
+		bool                     autoActive{ false };
 		bool                     warmedByFireMagic{ false };
+		bool                     heatNearby{ false };
 		bool                     idlePlaying{ false };
 		bool                     idleDismissed{ false };
 		bool                     idleBaselineKnown{ false };
-		const RE::TESIdleForm*   idleBaseline{ nullptr };
+		bool                     wasBlocked{ false };
 		bool                     leftoversPending{ true };
-		const RE::TESObjectCELL* cell{ nullptr };
 	};
 
 	State& GetState()
@@ -54,6 +156,15 @@ namespace
 		return warmed;
 	}
 
+	float StillSeconds(const State& state, RE::PlayerCharacter& player)
+	{
+		if (!WarmHands::PlayerState::IsStandingStill(player)) {
+			return 0.0F;
+		}
+		// Zero means moving, so a timer restarted this instant still reads as standing.
+		return std::max(std::chrono::duration<float>(Clock::now() - state.stillSince).count(), std::numeric_limits<float>::min());
+	}
+
 	WarmHands::IdleInputs GatherIdleInputs(State& state, RE::PlayerCharacter& player, const WarmHands::Settings& settings)
 	{
 		auto       inputs = WarmHands::PlayerState::ReadIdleInputs(player);
@@ -61,8 +172,9 @@ namespace
 		const bool measure = idleEnabled || settings.showActivationRange;
 		const auto heat = measure ? WarmHands::HeatSource::FindHeat(player, settings, state.idlePlaying) : WarmHands::HeatSource::NearHeat{};
 		inputs.nearHeat = idleEnabled && heat.any;
+		state.heatNearby = idleEnabled && heat.nearby;
 		inputs.autoHeat = heat.autoEnabled;
-		inputs.stillSeconds = state.stillSeconds;
+		inputs.stillSeconds = StillSeconds(state, player);
 		inputs.idleDelaySeconds = static_cast<float>(settings.idleDelay);
 		inputs.warmedByFireMagic = state.warmedByFireMagic;
 		return inputs;
@@ -93,6 +205,9 @@ namespace
 			return;
 		}
 		const auto* last = LastIdlePlayed(player);
+		if (!state.idleBaselineKnown && Clock::now() < state.idleStartedAt + kTransitionPeriod) {
+			return;
+		}
 		if (!state.idleBaselineKnown) {
 			state.idleBaseline = last;
 			state.idleBaselineKnown = true;
@@ -107,6 +222,9 @@ namespace
 	{
 		state.idlePlaying = StartIdle(player);
 		state.idleBaselineKnown = false;
+		state.idleStartedAt = Clock::now();
+		// The next evaluation records the idle baseline, or retries a start the graph refused.
+		GetScheduler().Request(state.idlePlaying ? kTransitionPeriod : kRetryPeriod);
 	}
 
 	void EndIdle(State& state, RE::PlayerCharacter& player)
@@ -117,17 +235,26 @@ namespace
 		state.idlePlaying = false;
 	}
 
-	void UpdateIdle(State& state, RE::PlayerCharacter& player, const WarmHands::Settings& settings)
+	WarmHands::IdleInputs UpdateIdle(State& state, RE::PlayerCharacter& player, const WarmHands::Settings& settings)
 	{
 		ForgetReplacedIdle(state, player);
 		const bool sameCell = player.GetParentCell() == state.cell;
 		state.cell = player.GetParentCell();
-		state.stillSeconds = sameCell && WarmHands::PlayerState::IsStandingStill(player) ? state.stillSeconds + kTickSeconds : 0.0F;
+		if (!sameCell || !WarmHands::PlayerState::IsStandingStill(player)) {
+			state.stillSince = Clock::now();
+		}
 
-		const auto inputs = GatherIdleInputs(state, player, settings);
+		auto       inputs = GatherIdleInputs(state, player, settings);
+		const bool blocked = WarmHands::IsBlocked(inputs);
+		if (state.wasBlocked && !blocked) {
+			state.stillSince = Clock::now();
+			inputs.stillSeconds = StillSeconds(state, player);
+		}
+		state.wasBlocked = blocked;
 		state.idleDismissed = WarmHands::KeepDismissed(state.idleDismissed, inputs);
-		const auto action = WarmHands::DecideIdle(inputs, state.idlePlaying, settings.autoWarmHands && !state.idleDismissed);
-		logger::debug("Idle: nearHeat={} still={:.0f}s combat={} sneak={} mounted={} drawn={} torch={} warmed={} busy={} playing={} -> {}",
+		const bool lookSettled = Clock::now() >= state.lookSettledAt;
+		const auto action = WarmHands::DecideIdle(inputs, state.idlePlaying, settings.autoWarmHands && !state.idleDismissed && lookSettled);
+		logger::debug("Idle: nearHeat={} still={:.1f}s combat={} sneak={} mounted={} drawn={} torch={} warmed={} busy={} playing={} -> {}",
 			inputs.nearHeat, inputs.stillSeconds, inputs.inCombat, inputs.sneaking, inputs.mounted, inputs.handsDrawn,
 			inputs.holdingTorch, inputs.warmedByFireMagic, inputs.busy, state.idlePlaying, static_cast<int>(action));
 		switch (action) {
@@ -144,22 +271,103 @@ namespace
 		case WarmHands::IdleAction::kNone:
 			break;
 		}
+		return inputs;
 	}
 
-	void Update()
+	bool IsTransient(RE::MagicCaster::State casterState)
 	{
-		auto* player = LoadedPlayer();
-		if (!player) {
+		using CasterState = RE::MagicCaster::State;
+		switch (casterState) {
+		case CasterState::kNone:
+		case CasterState::kReady:
+		case CasterState::kCharging:
+		case CasterState::kCasting:
+			return false;
+		default:
+			return true;
+		}
+	}
+
+	bool InTransition(RE::PlayerCharacter& player)
+	{
+		using WeaponState = RE::WEAPON_STATE;
+		const auto weapon = player.AsActorState()->GetWeaponState();
+		if (weapon != WeaponState::kSheathed && weapon != WeaponState::kDrawn) {
+			return true;
+		}
+		using Source = RE::MagicSystem::CastingSource;
+		return std::ranges::any_of(std::array{ Source::kLeftHand, Source::kRightHand }, [&player](Source source) {
+			const auto* caster = player.GetMagicCaster(source);
+			return caster && IsTransient(caster->state.get());
+		});
+	}
+
+	Clock::time_point StillDeadline(const State& state)
+	{
+		return std::max(state.stillSince + state.idleDelay, state.lookSettledAt);
+	}
+
+	void ArmStillCheck(const State& state)
+	{
+		const bool pending = state.autoActive && !state.idlePlaying && !state.idleDismissed;
+		GetScheduler().SetStillAt(pending ? std::optional{ StillDeadline(state) } : std::nullopt);
+	}
+
+	void ScheduleFollowUp(const State& state, RE::PlayerCharacter& player, const WarmHands::Settings& settings, const WarmHands::IdleInputs& inputs)
+	{
+		if (settings.showActivationRange) {
+			GetScheduler().Request(kOverlayPeriod);
+		}
+		if (InTransition(player)) {
+			GetScheduler().Request(kTransitionPeriod);
+		}
+		// Staggers, script idles and fires being deleted end ours without an event.
+		if (state.idlePlaying) {
+			GetScheduler().Request(state.idleBaselineKnown ? kRetryPeriod : kTransitionPeriod);
+		}
+		const bool moving = inputs.stillSeconds <= 0.0F;
+		// Auto-Move and knockback move the player without any input events.
+		if (moving && (state.warmedByFireMagic || state.autoActive)) {
+			GetScheduler().Request(kMovingPeriod);
+		}
+		if (moving) {
 			return;
 		}
+		// The furniture, combat and sneak key events arrive before the state they report clears.
+		const bool blocked = inputs.busy || inputs.mounted || inputs.inCombat || inputs.sneaking;
+		if (blocked && state.autoActive && state.heatNearby) {
+			GetScheduler().Request(kRetryPeriod);
+		}
+		if (!inputs.autoHeat || !WarmHands::CanStartIdle(inputs)) {
+			GetScheduler().SetStillAt(std::nullopt);
+			return;
+		}
+		if (Clock::now() < StillDeadline(state)) {
+			ArmStillCheck(state);
+		}
+	}
+
+	void Evaluate()
+	{
+		GetScheduler().Started();
 		auto& state = GetState();
+		auto* player = LoadedPlayer();
+		if (!player) {
+			state.wasBlocked = true;
+			GetScheduler().Request(kRetryPeriod);
+			return;
+		}
+		WarmHands::GameEvents::GetSingleton()->AttachToPlayer();
 		if (state.leftoversPending) {
 			WarmHands::HeatSource::RemoveLeftovers(*player);
 			state.leftoversPending = false;
 		}
 		const auto settings = WarmHands::Config::Active();
+		state.autoActive = settings.autoWarmHands;
+		state.idleDelay = std::chrono::seconds{ settings.idleDelay };
 		state.warmedByFireMagic = UpdateWarmth(*player, settings);
-		UpdateIdle(state, *player, settings);
+		const auto inputs = UpdateIdle(state, *player, settings);
+		ScheduleFollowUp(state, *player, settings, inputs);
 	}
 }
 
@@ -170,22 +378,26 @@ void WarmHands::Ticker::Start()
 		logger::error("SKSE task interface unavailable; Warm Hands disabled");
 		return;
 	}
-	static std::jthread thread{ [tasks](const std::stop_token& stop) {
-		while (!stop.stop_requested()) {
-			std::this_thread::sleep_for(kTickPeriod);
-			tasks->AddTask(Update);
-		}
-	} };
+	auto&               scheduler = GetScheduler();
+	static std::jthread thread{ [&scheduler, tasks](const std::stop_token& stop) { scheduler.Run(stop, *tasks); } };
+	RequestCheck();
+}
+
+void WarmHands::Ticker::RequestCheck()
+{
+	GetScheduler().Request(Clock::duration::zero());
 }
 
 void WarmHands::Ticker::Reset()
 {
 	auto& state = GetState();
-	state.stillSeconds = 0.0F;
+	state.stillSince = Clock::now();
 	state.warmedByFireMagic = false;
 	state.idlePlaying = false;
 	state.idleDismissed = false;
+	state.wasBlocked = false;
 	state.leftoversPending = true;
+	RequestCheck();
 }
 
 bool WarmHands::Ticker::HoldArmed()
@@ -196,9 +408,8 @@ bool WarmHands::Ticker::HoldArmed()
 	}
 	auto&      state = GetState();
 	const auto settings = Config::Active();
-	auto       inputs = GatherIdleInputs(state, *player, settings);
-	inputs.stillSeconds = PlayerState::IsStandingStill(*player) ? std::max(state.stillSeconds, kTickSeconds) : 0.0F;
-	return settings.holdToWarmHands && CanStartOnHold(inputs);
+	const auto inputs = GatherIdleInputs(state, *player, settings);
+	return settings.holdToWarmHands && CanStartIdle(inputs);
 }
 
 void WarmHands::Ticker::StartIdleFromHold()
@@ -232,12 +443,30 @@ void WarmHands::Ticker::DismissIdle()
 void WarmHands::Ticker::OnMovementInput()
 {
 	auto& state = GetState();
-	state.stillSeconds = 0.0F;
+	state.stillSince = Clock::now();
 	state.idleDismissed = false;
 	auto* player = RE::PlayerCharacter::GetSingleton();
-	if (!state.idlePlaying || !player) {
+	if (!player) {
 		return;
 	}
-	logger::debug("Movement ended the warm hands idle");
-	EndIdle(state, *player);
+	if (state.warmedByFireMagic) {
+		HeatSource::Follow(*player);
+		// Auto-Move keeps moving after its only input, so a later check has to see the movement.
+		GetScheduler().Request(kMovingPeriod);
+	}
+	if (state.idlePlaying) {
+		logger::debug("Movement ended the warm hands idle");
+		EndIdle(state, *player);
+	}
+	ArmStillCheck(state);
+}
+
+void WarmHands::Ticker::OnLookInput()
+{
+	auto& state = GetState();
+	if (!state.heatNearby || state.wasBlocked) {
+		return;
+	}
+	state.lookSettledAt = Clock::now() + kLookSettle;
+	ArmStillCheck(state);
 }

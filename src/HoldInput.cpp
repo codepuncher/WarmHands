@@ -178,21 +178,40 @@ bool WarmHands::HoldInput::ProcessButton(const RE::ButtonEvent& button, Binding&
 
 namespace
 {
+	bool IsStickInput(const RE::InputEvent& event, const RE::BSFixedString& userEvent)
+	{
+		const auto* stick = event.AsThumbstickEvent();
+		return stick && event.QUserEvent() == userEvent && (stick->xValue != 0.0F || stick->yValue != 0.0F);
+	}
+
 	bool IsMovementInput(const RE::InputEvent& event)
 	{
 		const auto* userEvents = RE::UserEvents::GetSingleton();
 		if (!userEvents) {
 			return false;
 		}
-		const auto& name = event.QUserEvent();
-		if (const auto* stick = event.AsThumbstickEvent()) {
-			return name == userEvents->move && (stick->xValue != 0.0F || stick->yValue != 0.0F);
+		if (event.AsThumbstickEvent()) {
+			return IsStickInput(event, userEvents->move);
 		}
+		const auto& name = event.QUserEvent();
 		const auto* button = event.AsButtonEvent();
 		if (!button || !button->IsPressed()) {
 			return false;
 		}
+		// Auto-Move starts and stops on one press, then moves the player without further input.
+		if (name == userEvents->autoMove) {
+			return button->IsDown();
+		}
 		return name == userEvents->forward || name == userEvents->back || name == userEvents->strafeLeft || name == userEvents->strafeRight;
+	}
+
+	bool IsLookInput(const RE::InputEvent& event)
+	{
+		if (event.GetEventType() == RE::INPUT_EVENT_TYPE::kMouseMove) {
+			return true;
+		}
+		const auto* userEvents = RE::UserEvents::GetSingleton();
+		return userEvents && IsStickInput(event, userEvents->look);
 	}
 }
 
@@ -202,12 +221,19 @@ RE::BSEventNotifyControl WarmHands::HoldInput::ProcessEvent(RE::InputEvent* cons
 		return RE::BSEventNotifyControl::kContinue;
 	}
 	for (auto* event = *a_events; event; event = event->next) {
-		if (IsMovementInput(*event)) {
+		const bool movement = IsMovementInput(*event);
+		if (movement) {
 			Ticker::OnMovementInput();
+		}
+		if (IsLookInput(*event)) {
+			Ticker::OnLookInput();
 		}
 		auto* button = event->AsButtonEvent();
 		if (!button) {
 			continue;
+		}
+		if (!movement && (button->IsDown() || button->IsUp())) {
+			Ticker::RequestCheck();
 		}
 		for (auto& binding : bindings_) {
 			if (binding.keyCode == 0 || button->GetDevice() != binding.device || button->GetIDCode() != binding.keyCode) {

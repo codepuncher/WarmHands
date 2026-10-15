@@ -6,6 +6,8 @@ namespace WarmHands::Ticker
 
 	void Reset();
 
+	void RequestCheck();
+
 	[[nodiscard]] bool HoldArmed();
 
 	void StartIdleFromHold();
@@ -15,4 +17,6 @@ namespace WarmHands::Ticker
 	void DismissIdle();
 
 	void OnMovementInput();
+
+	void OnLookInput();
 }

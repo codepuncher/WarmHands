@@ -95,6 +95,8 @@ else()
         src/Config.cpp
         src/FireMagic.h
         src/FireMagic.cpp
+        src/GameEvents.h
+        src/GameEvents.cpp
         src/HeatSource.h
         src/HeatSource.cpp
         src/HoldInput.h
@@ -131,8 +133,8 @@ else()
     target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
                                                        "${CMAKE_CURRENT_BINARY_DIR}/src")
     target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib/skse-mcp/include")
-    # windows.h (via SimpleIni) otherwise defines max(), which breaks numeric_limits<>::max(), and
-    # winspool's AddForm macro, which renames BGSListForm::AddForm.
+    # windows.h (via SimpleIni) otherwise defines max(), which breaks numeric_limits<>::max().
+    # Its winspool AddForm macro also renames BGSListForm::AddForm.
     target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 
     set_target_properties(

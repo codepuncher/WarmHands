@@ -74,12 +74,12 @@ WarmHands::IdleInputs WarmHands::PlayerState::ReadIdleInputs(RE::PlayerCharacter
 	auto*       ui = RE::UI::GetSingleton();
 	const bool  inDialogue = ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME);
 	const auto* controlMap = RE::ControlMap::GetSingleton();
-	const bool  controlsLocked = controlMap && (!controlMap->IsMovementControlsEnabled() || !controlMap->IsFightingControlsEnabled());
+	const bool  controlsLocked = controlMap && !controlMap->IsMovementControlsEnabled();
 	return {
 		.inCombat = player.IsInCombat(),
 		.sneaking = player.IsSneaking(),
 		.mounted = player.IsOnMount(),
-		.handsDrawn = actorState->IsWeaponDrawn(),
+		.handsDrawn = actorState->GetWeaponState() != RE::WEAPON_STATE::kSheathed,
 		.holdingTorch = leftHand && leftHand->Is(RE::FormType::Light),
 		.busy = actorState->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal || actorState->IsSwimming() || inDialogue || controlsLocked,
 	};

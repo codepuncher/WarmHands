@@ -11,6 +11,7 @@
 namespace RE
 {
 	class PlayerCharacter;
+	class TESObjectREFR;
 }
 
 namespace WarmHands::HeatSource
@@ -19,11 +20,16 @@ namespace WarmHands::HeatSource
 
 	void Update(RE::PlayerCharacter& player, bool active);
 
+	void Follow(RE::PlayerCharacter& player);
+
 	struct NearHeat
 	{
 		bool any{ false };
 		bool autoEnabled{ false };
+		bool nearby{ false };
 	};
+
+	[[nodiscard]] bool IsHeatSourceNear(RE::PlayerCharacter& player, const RE::TESObjectREFR& ref, const Settings& settings);
 
 	[[nodiscard]] NearHeat FindHeat(RE::PlayerCharacter& player, const Settings& settings, bool idlePlaying);
 

@@ -6,6 +6,7 @@
 #include "MenuUI.h"  // NOLINT(readability-duplicate-include): clang-tidy 21 false positive on Linux clang-cl
 #include "RangeOverlay.h"
 #include "SKSEMCP/SKSEMenuFramework.hpp"
+#include "Ticker.h"  // NOLINT(readability-duplicate-include): clang-tidy 21 false positive on Linux clang-cl
 
 #include <span>
 
@@ -50,6 +51,7 @@ namespace
 		}
 		WarmHands::Config::SetCurrent(settings);
 		WarmHands::Config::ApplyLogLevel(settings);
+		WarmHands::Ticker::RequestCheck();
 		if (const auto* tasks = SKSE::GetTaskInterface()) {
 			tasks->AddTask(ApplyHoldBinding);
 		}

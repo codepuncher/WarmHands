@@ -118,33 +118,33 @@ TEST_CASE("DecideIdle does not auto start when auto is off", "[idle]")
 	CHECK(DecideIdle(in, true, false) == IdleAction::kStop);
 }
 
-TEST_CASE("CanStartOnHold skips the settle time but needs the player standing", "[idle]")
+TEST_CASE("CanStartIdle skips the settle time but needs the player standing", "[idle]")
 {
-	using WarmHands::CanStartOnHold;
+	using WarmHands::CanStartIdle;
 
 	auto in = ReadyToWarm();
 	in.stillSeconds = 0.5F;
-	CHECK(CanStartOnHold(in));
+	CHECK(CanStartIdle(in));
 
 	in.stillSeconds = 0.0F;
-	CHECK_FALSE(CanStartOnHold(in));
+	CHECK_FALSE(CanStartIdle(in));
 }
 
-TEST_CASE("CanStartOnHold needs heat and free hands", "[idle]")
+TEST_CASE("CanStartIdle needs heat and free hands", "[idle]")
 {
-	using WarmHands::CanStartOnHold;
+	using WarmHands::CanStartIdle;
 
 	auto noHeat = ReadyToWarm();
 	noHeat.nearHeat = false;
-	CHECK_FALSE(CanStartOnHold(noHeat));
+	CHECK_FALSE(CanStartIdle(noHeat));
 
 	auto drawn = ReadyToWarm();
 	drawn.handsDrawn = true;
-	CHECK_FALSE(CanStartOnHold(drawn));
+	CHECK_FALSE(CanStartIdle(drawn));
 
 	auto busy = ReadyToWarm();
 	busy.busy = true;
-	CHECK_FALSE(CanStartOnHold(busy));
+	CHECK_FALSE(CanStartIdle(busy));
 }
 
 TEST_CASE("DecideIdle keeps a hold-started idle before the settle time", "[idle]")
@@ -187,11 +187,11 @@ TEST_CASE("DecideIdle does not auto start at a heat source with auto turned off"
 
 TEST_CASE("A manual idle keeps playing at a heat source with auto turned off", "[idle]")
 {
-	using WarmHands::CanStartOnHold;
+	using WarmHands::CanStartIdle;
 
 	auto in = ReadyToWarm();
 	in.autoHeat = false;
 
-	CHECK(CanStartOnHold(in));
+	CHECK(CanStartIdle(in));
 	CHECK(DecideIdle(in, true, true) == IdleAction::kNone);
 }

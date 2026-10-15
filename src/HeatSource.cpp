@@ -27,6 +27,11 @@ namespace
 	constexpr float kFollowDistance = 50.0F;
 
 	constexpr float kHeatSourceReach = 600.0F;
+
+	float SearchRadius(const WarmHands::Settings& settings)
+	{
+		return settings.warmHandsRadius + kHeatSourceReach;
+	}
 	constexpr float kMaxHeightDifference = 150.0F;
 	constexpr float kFacingHalfAngle = std::numbers::pi_v<float> / 4.0F;
 	constexpr float kOpeningHalfAngle = std::numbers::pi_v<float> / 3.0F;
@@ -328,6 +333,36 @@ bool WarmHands::HeatSource::Initialize()
 	return !state.nearHeatLists.empty();
 }
 
+namespace
+{
+	void KeepWithPlayer(RE::TESObjectREFR& ref, RE::PlayerCharacter& player)
+	{
+		// A reference left in an unloaded exterior cell unloads its 3D with it.
+		if (ref.GetParentCell() != player.GetParentCell()) {
+			logger::debug("Hand flame moved into the player's cell");
+			ref.MoveTo(&player);
+			return;
+		}
+		// MoveTo reloads the 3D and heat checks skip a reference until it loads again.
+		const auto at = player.GetPosition();
+		if (ref.GetPosition().GetDistance(at) <= kFollowDistance) {
+			return;
+		}
+		ref.SetPosition(at);
+		// SetPosition only moves the reference's data; the loaded 3D stays where it was.
+		ref.Update3DPosition(true);
+	}
+}
+
+void WarmHands::HeatSource::Follow(RE::PlayerCharacter& player)
+{
+	const auto ref = GetState().reference.get();
+	if (!ref || ref->IsDisabled()) {
+		return;
+	}
+	KeepWithPlayer(*ref, player);
+}
+
 void WarmHands::HeatSource::Update(RE::PlayerCharacter& player, bool active)
 {
 	auto&      state = GetState();
@@ -340,10 +375,7 @@ void WarmHands::HeatSource::Update(RE::PlayerCharacter& player, bool active)
 		return;
 	}
 	if (ref && !ref->IsDisabled()) {
-		const bool left = ref->GetParentCell() != player.GetParentCell() || ref->GetPosition().GetDistance(player.GetPosition()) > kFollowDistance;
-		if (left) {
-			ref->MoveTo(&player);
-		}
+		KeepWithPlayer(*ref, player);
 		return;
 	}
 	if (ref) {
@@ -355,18 +387,25 @@ void WarmHands::HeatSource::Update(RE::PlayerCharacter& player, bool active)
 		return;
 	}
 	state.reference = placed->GetHandle();
+	logger::debug("Hand flame placed");
 }
 
 namespace
 {
-	const RE::TESBoundObject* LoadedHeatSourceBase(const State& state, RE::TESObjectREFR* ref)
+	const RE::TESBoundObject* ListedHeatSourceBase(const State& state, const RE::TESObjectREFR& ref)
 	{
-		const auto* base = ref ? ref->GetBaseObject() : nullptr;
+		const auto* base = ref.GetBaseObject();
 		if (!base || base == state.activator) {
 			return nullptr;
 		}
-		const bool isHeatSource = std::ranges::any_of(state.nearHeatLists, [base](const RE::BGSListForm* list) { return list->HasForm(base); });
-		if (!isHeatSource) {
+		const bool listed = std::ranges::any_of(state.nearHeatLists, [base](const RE::BGSListForm* list) { return list->HasForm(base); });
+		return listed ? base : nullptr;
+	}
+
+	const RE::TESBoundObject* LoadedHeatSourceBase(const State& state, RE::TESObjectREFR* ref)
+	{
+		const auto* base = ref ? ListedHeatSourceBase(state, *ref) : nullptr;
+		if (!base) {
 			return nullptr;
 		}
 		if (ref->IsDisabled() || !ref->Is3DLoaded()) {
@@ -375,6 +414,14 @@ namespace
 		}
 		return base;
 	}
+}
+
+bool WarmHands::HeatSource::IsHeatSourceNear(RE::PlayerCharacter& player, const RE::TESObjectREFR& ref, const Settings& settings)
+{
+	if (ref.GetPosition().GetDistance(player.GetPosition()) > SearchRadius(settings)) {
+		return false;
+	}
+	return ListedHeatSourceBase(GetState(), ref);
 }
 
 WarmHands::HeatSource::NearHeat WarmHands::HeatSource::FindHeat(RE::PlayerCharacter& player, const Settings& settings, bool idlePlaying)
@@ -391,7 +438,7 @@ WarmHands::HeatSource::NearHeat WarmHands::HeatSource::FindHeat(RE::PlayerCharac
 	const float                      reach = setting + bodyRadius;
 	const auto                       feet = player.GetPosition();
 	std::vector<HeatSource::Outline> outlines;
-	tes->ForEachReferenceInRange(&player, settings.warmHandsRadius + kHeatSourceReach, [&](RE::TESObjectREFR* ref) {
+	tes->ForEachReferenceInRange(&player, SearchRadius(settings), [&](RE::TESObjectREFR* ref) {
 		const auto* base = LoadedHeatSourceBase(state, ref);
 		if (!base) {
 			return RE::BSContainer::ForEachResult::kContinue;
@@ -400,6 +447,7 @@ WarmHands::HeatSource::NearHeat WarmHands::HeatSource::FindHeat(RE::PlayerCharac
 		if (!measured) {
 			return RE::BSContainer::ForEachResult::kContinue;
 		}
+		found.nearby = true;
 		const bool castRays = measured->onWarmSide && (measured->facing || settings.showActivationRange);
 		const auto checked = CheckReach(player, *measured, setting, bodyRadius, castRays);
 		logger::debug("Heat source {:08X}: {} gap {:.0f} units", ref->GetFormID(), checked.hit ? "collision" : "shape", checked.gap);

@@ -27,10 +27,14 @@ namespace WarmHands
 		kForget,
 	};
 
-	[[nodiscard]] constexpr bool CanStartOnHold(const IdleInputs& in) noexcept
+	[[nodiscard]] constexpr bool IsBlocked(const IdleInputs& in) noexcept
 	{
-		return in.nearHeat && in.stillSeconds > 0.0F && !in.inCombat && !in.sneaking && !in.mounted &&
-		       !in.handsDrawn && !in.holdingTorch && !in.warmedByFireMagic && !in.busy;
+		return in.inCombat || in.sneaking || in.mounted || in.handsDrawn || in.holdingTorch || in.warmedByFireMagic || in.busy;
+	}
+
+	[[nodiscard]] constexpr bool CanStartIdle(const IdleInputs& in) noexcept
+	{
+		return in.nearHeat && in.stillSeconds > 0.0F && !IsBlocked(in);
 	}
 
 	[[nodiscard]] constexpr bool KeepDismissed(bool dismissed, const IdleInputs& in) noexcept
@@ -40,7 +44,7 @@ namespace WarmHands
 
 	[[nodiscard]] constexpr IdleAction DecideIdle(const IdleInputs& in, bool idlePlaying, bool autoEnabled) noexcept
 	{
-		const bool canPlay = CanStartOnHold(in);
+		const bool canPlay = CanStartIdle(in);
 		if (!idlePlaying) {
 			const bool autoStart = autoEnabled && in.autoHeat && canPlay && in.stillSeconds >= in.idleDelaySeconds;
 			return autoStart ? IdleAction::kStart : IdleAction::kNone;
