@@ -39,7 +39,9 @@ namespace
 	{
 		return settings.warmHandsRadius + kHeatSourceReach;
 	}
-	constexpr float kMaxHeightDifference = 150.0F;
+	// Giant camp lights and the College fire pillars sit 150 to 250 units above the ground.
+	constexpr float kMaxHeightAbove = 350.0F;
+	constexpr float kMaxHeightBelow = 150.0F;
 	constexpr float kFacingHalfAngle = std::numbers::pi_v<float> / 4.0F;
 	constexpr float kOpeningHalfAngle = std::numbers::pi_v<float> / 3.0F;
 
@@ -104,6 +106,10 @@ namespace
 		return std::nullopt;
 	}
 
+	constexpr float kMaxHitToShape = 105.0F;
+	// A listed light marks the centre of its fire, which can be far wider than the light's bounds.
+	constexpr float kMaxHitToLight = 250.0F;
+
 	struct Measured
 	{
 		float                        distance;
@@ -111,6 +117,7 @@ namespace
 		bool                         facing;
 		std::vector<WarmHands::Vec2> outline;
 		WarmHands::Vec2              centre;
+		float                        maxHitToShape{ kMaxHitToShape };
 	};
 
 	constexpr int kOutlineSegments = 48;
@@ -118,44 +125,100 @@ namespace
 
 	constexpr std::array<float, 3> kRayHeights{ 20.0F, 50.0F, 90.0F };
 
-	constexpr float kMaxHitToShape = 105.0F;
+	struct Hit
+	{
+		float                    fraction;
+		const RE::TESObjectREFR* ref;
+	};
+
+	class Raycaster
+	{
+	public:
+		explicit Raycaster(RE::PlayerCharacter& player)
+		{
+			auto* cell = player.GetParentCell();
+			world_ = cell ? cell->GetbhkWorld() : nullptr;
+			player.GetCollisionFilterInfo(filter_);
+			filter_.SetCollisionLayer(RE::COL_LAYER::kLOS);
+		}
+
+		[[nodiscard]] std::optional<Hit> Pick(const RE::NiPoint3& from, const RE::NiPoint3& to) const
+		{
+			if (!world_) {
+				return std::nullopt;
+			}
+			const float     scale = RE::bhkWorld::GetWorldScale();
+			RE::bhkPickData pick;
+			pick.rayInput.from = RE::hkVector4(from * scale);
+			pick.rayInput.to = RE::hkVector4(to * scale);
+			pick.rayInput.filterInfo = filter_;
+			{
+				const RE::BSReadLockGuard lock{ world_->worldLock };
+				world_->PickObject(pick);
+			}
+			if (!pick.rayOutput.HasHit()) {
+				return std::nullopt;
+			}
+			return Hit{ .fraction = pick.rayOutput.hitFraction, .ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable) };
+		}
+
+	private:
+		RE::bhkWorld* world_{ nullptr };
+		RE::CFilter   filter_{};
+	};
+
+	constexpr float kHeadHeight = 100.0F;
+	constexpr float kStepPast = 5.0F;
+	constexpr int   kMaxSightHits = 4;
+
+	bool IsListedHeatSource(const RE::TESObjectREFR& ref);
+
+	/**
+	 * A raised fire also fits the height window when it sits on the floor above or on a cliff top. Heat
+	 * sources in the way are stepped through, since a giant camp bonfire's logs surround its light.
+	 */
+	bool IsOutOfSight(RE::PlayerCharacter& player, const RE::NiPoint3& heat)
+	{
+		const Raycaster rays{ player };
+		const auto      feet = player.GetPosition();
+		RE::NiPoint3    from{ feet.x, feet.y, feet.z + kHeadHeight };
+		for (int i = 0; i < kMaxSightHits; ++i) {
+			const auto hit = rays.Pick(from, heat);
+			if (!hit) {
+				return false;
+			}
+			if (!hit->ref || !IsListedHeatSource(*hit->ref)) {
+				return true;
+			}
+			const auto  toHeat = heat - from;
+			const float next = hit->fraction + (kStepPast / toHeat.Length());
+			if (next >= 1.0F) {
+				return false;
+			}
+			from = from + (toHeat * next);
+		}
+		return false;
+	}
 
 	std::optional<WarmHands::Vec2> CastTowards(RE::PlayerCharacter& player, WarmHands::Vec2 target)
 	{
-		auto* cell = player.GetParentCell();
-		auto* world = cell ? cell->GetbhkWorld() : nullptr;
-		if (!world) {
-			return std::nullopt;
-		}
-		RE::CFilter filter{};
-		player.GetCollisionFilterInfo(filter);
-		filter.SetCollisionLayer(RE::COL_LAYER::kLOS);
-		const float           scale = RE::bhkWorld::GetWorldScale();
+		const Raycaster       rays{ player };
 		const auto            feet = player.GetPosition();
 		const WarmHands::Vec2 toTarget{ .x = target.x - feet.x, .y = target.y - feet.y };
 		const float           length = WarmHands::Length(toTarget);
-		std::optional<float>  distance;
+		std::optional<float>  closest;
 		for (const float height : kRayHeights) {
 			const RE::NiPoint3 from{ feet.x, feet.y, feet.z + height };
 			const RE::NiPoint3 to{ target.x, target.y, feet.z + height };
-			RE::bhkPickData    pick;
-			pick.rayInput.from = RE::hkVector4(from * scale);
-			pick.rayInput.to = RE::hkVector4(to * scale);
-			pick.rayInput.filterInfo = filter;
-			{
-				const RE::BSReadLockGuard lock{ world->worldLock };
-				world->PickObject(pick);
-			}
-			if (pick.rayOutput.HasHit()) {
-				const float hit = pick.rayOutput.hitFraction * length;
-				distance = distance ? std::min(*distance, hit) : hit;
+			const auto         hit = rays.Pick(from, to);
+			if (hit && (!closest || hit->fraction < *closest)) {
+				closest = hit->fraction;
 			}
 		}
-		if (!distance || length == 0.0F) {
+		if (!closest || length == 0.0F) {
 			return std::nullopt;
 		}
-		const float fraction = *distance / length;
-		return WarmHands::Vec2{ .x = feet.x + (toTarget.x * fraction), .y = feet.y + (toTarget.y * fraction) };
+		return WarmHands::Vec2{ .x = feet.x + (toTarget.x * *closest), .y = feet.y + (toTarget.y * *closest) };
 	}
 
 	std::vector<WarmHands::Vec2> CircleOutline(const FireCircle& fire, float reach)
@@ -184,10 +247,15 @@ namespace
 
 	std::optional<Measured> Measure(RE::PlayerCharacter& player, RE::TESObjectREFR& ref, const RE::TESBoundObject& base, float reach)
 	{
-		const auto playerPos = player.GetPosition();
-		const auto refPos = ref.GetPosition();
-		if (std::abs(playerPos.z - refPos.z) > kMaxHeightDifference) {
-			logger::debug("Heat source {:08X} skipped: height difference {:.0f}", ref.GetFormID(), playerPos.z - refPos.z);
+		const auto  playerPos = player.GetPosition();
+		const auto  refPos = ref.GetPosition();
+		const float rise = refPos.z - playerPos.z;
+		if (rise > kMaxHeightAbove || rise < -kMaxHeightBelow) {
+			logger::debug("Heat source {:08X} skipped: {:.0f} units above the player", ref.GetFormID(), rise);
+			return std::nullopt;
+		}
+		if (rise > kMaxHeightBelow && IsOutOfSight(player, refPos)) {
+			logger::debug("Heat source {:08X} skipped: out of sight above the player", ref.GetFormID());
 			return std::nullopt;
 		}
 		if (const auto fire = FindFurnitureFire(ref, base)) {
@@ -203,7 +271,9 @@ namespace
 		};
 		const WarmHands::Vec2 origin{ .x = refPos.x, .y = refPos.y };
 		if (KindOf(base) == WarmHands::HeatKind::kFire) {
-			return MeasureFireCircle(player, ref, { .position = origin, .radius = WarmHands::FlameRadius(footprint), .outward = std::nullopt }, reach);
+			auto measured = MeasureFireCircle(player, ref, { .position = origin, .radius = WarmHands::FlameRadius(footprint), .outward = std::nullopt }, reach);
+			measured.maxHitToShape = base.Is(RE::FormType::Light) ? kMaxHitToLight : kMaxHitToShape;
+			return measured;
 		}
 		const WarmHands::Vec2 offset{ .x = playerPos.x - refPos.x, .y = playerPos.y - refPos.y };
 		const auto            toEdge = WarmHands::ToNearestEdge(offset, ref.GetAngleZ(), footprint);
@@ -248,7 +318,8 @@ namespace
 		}
 		const WarmHands::Vec2 toHit{ .x = hit->x - from.x, .y = hit->y - from.y };
 		const float           gap = std::max(WarmHands::Length(toHit) - BodyExtent(player, toHit, bodyRadius), 0.0F);
-		const bool            inReach = measured.onWarmSide && gap <= setting && measured.distance - WarmHands::Length(toHit) <= kMaxHitToShape;
+		const bool            nearShape = measured.distance - WarmHands::Length(toHit) <= measured.maxHitToShape;
+		const bool            inReach = measured.onWarmSide && gap <= setting && nearShape;
 		return { .hit = hit, .gap = gap, .limit = setting, .inReach = inReach };
 	}
 
@@ -407,6 +478,11 @@ namespace
 		}
 		const bool listed = std::ranges::any_of(state.nearHeatLists, [base](const RE::BGSListForm* list) { return list->HasForm(base); });
 		return listed ? base : nullptr;
+	}
+
+	bool IsListedHeatSource(const RE::TESObjectREFR& ref)
+	{
+		return ListedHeatSourceBase(GetState(), ref) != nullptr;
 	}
 
 	const RE::TESBoundObject* LoadedHeatSourceBase(const State& state, RE::TESObjectREFR* ref)
