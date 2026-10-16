@@ -1,0 +1,12 @@
+SpriggitSource:
+  PackageName: Spriggit.Yaml.Skyrim
+  Version: 0.41
+ModKey: WarmHands.esl
+GameRelease: SkyrimSE
+ModHeader:
+  Flags:
+  - Small
+  Author: codepuncher
+  MasterReferences:
+  - Master: Skyrim.esm
+    FileSize: 0

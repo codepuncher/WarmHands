@@ -11,7 +11,9 @@ Supports building on **Linux** (cross-compilation via `clang-cl` + [xwin](https:
 
 ## Requirements
 
-- [SKSE64](https://skse.silverlock.org/)
+- [SKSE64](https://skse.silverlock.org/), or [SKSEVR](https://skse.silverlock.org/) for VR
+- Survival Mode (Creation Club) with or without Survival Mode Improved, or Campfire with Frostfall
+- [Skyrim VR ESL Support](https://www.nexusmods.com/skyrimspecialedition/mods/106712) for VR, to load `WarmHands.esl`
 - [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444) for SE and AE, or [VR Address Library for SKSEVR](https://www.nexusmods.com/skyrimspecialedition/mods/58101) for VR
 
 ## Installation
@@ -25,13 +27,14 @@ Supports building on **Linux** (cross-compilation via `clang-cl` + [xwin](https:
 **Manual:**
 
 1. Install the requirements above.
-2. Copy `WarmHands.dll` to `Data\SKSE\Plugins\`.
-3. Launch Skyrim via SKSE.
+2. Copy `WarmHands.dll` and `WarmHands.ini` to `Data\SKSE\Plugins\`.
+3. Copy `WarmHands.esl` to `Data\` and enable it in your load order.
+4. Launch Skyrim via SKSE.
 
 ## Compatibility
 
-- Compatible with Skyrim SE, AE, and VR.
-- No ESP/ESL required.
+- Compatible with Skyrim SE, AE and VR.
+- Includes `WarmHands.esl`, a light plugin that adds the hand-flame heat source.
 
 <!-- nexus:end -->
 

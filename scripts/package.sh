@@ -77,6 +77,18 @@ if [[ ${#dlls[@]} -ne 1 ]]; then
 fi
 dll="${dlls[0]}"
 
+mapfile -t ESLS < <(find "$build_dir" -maxdepth 2 -type f -name "${project_name}.esl")
+if [[ ${#ESLS[@]} -ne 1 ]]; then
+    echo "Error: expected exactly 1 ESL in ${build_dir}, found ${#ESLS[@]}"
+    exit 1
+fi
+ESL="${ESLS[0]}"
+INI="${project_name}.ini"
+if [[ ! -f "$INI" ]]; then
+    echo "Error: ${INI} not found in the project root"
+    exit 1
+fi
+
 name=$(basename "$dll" .dll)
 zip_name="dist/${name}-${version}.zip"
 
@@ -86,8 +98,9 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/SKSE/Plugins"
-cp "$dll" "$tmp/SKSE/Plugins/"
-(cd "$tmp" && 7z a -tzip out.zip SKSE > /dev/null)
+cp "$dll" "$INI" "$tmp/SKSE/Plugins/"
+cp "$ESL" "$tmp/"
+(cd "$tmp" && 7z a -tzip out.zip SKSE "$(basename "$ESL")" > /dev/null)
 mv "$tmp/out.zip" "$zip_name"
 
 echo ""
